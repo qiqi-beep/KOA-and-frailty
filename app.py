@@ -37,7 +37,7 @@ def load_components():
         
         # 加载预处理器
         try:
-            with open(base_path / "frailty_preprocessor.pkl", 'rb') as f:
+            with open(base_path / "frailty_preprocessor28.pkl", 'rb') as f:
                 preprocessor = pickle.load(f)
         except Exception as e:
             st.error(f"预处理器加载失败: {str(e)}")
@@ -52,7 +52,7 @@ def load_components():
         
         # 加载预测器（包含优化阈值）
         try:
-            with open(base_path / "frailty_predictor.pkl", 'rb') as f:
+            with open(base_path / "frailty_predictor28.pkl", 'rb') as f:
                 predictor = pickle.load(f)
         except Exception as e:
             st.warning(f"预测器加载失败，将使用默认阈值: {str(e)}")
@@ -271,3 +271,4 @@ with st.expander("ℹ️ 模型信息"):
 # 页脚
 st.markdown("---")
 st.caption("©2025 KOA预测系统 | 仅供临床参考")
+

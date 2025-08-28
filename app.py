@@ -37,7 +37,7 @@ def load_model_and_features():
         
         base_path = Path(__file__).parent
         model_path = base_path / "frailty_xgb_model (1).pkl"
-        #feature_path = base_path / "feature_names11.pkl"
+        feature_path = base_path / "frailty_feature_names.pkl"
         
         # 验证文件
         if not model_path.exists():
@@ -229,4 +229,5 @@ if submitted:
 # 页脚
 st.markdown("---")
 st.caption("©2025 KOA预测系统 | 仅供临床参考")
+
 

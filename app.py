@@ -7,6 +7,7 @@ import shap
 import matplotlib.pyplot as plt
 from pathlib import Path
 import time
+
 # 页面设置
 st.set_page_config(page_title="KOA 患者衰弱风险预测", layout="centered")
 st.title("🩺 膝骨关节炎患者衰弱风险预测系统")
@@ -115,7 +116,7 @@ if submitted:
     with st.spinner('正在计算预测结果...'):
         time.sleep(0.3)
 
-        # ======== 构建输入数据（严格按照你的特征名）========
+        # ======== 构建输入数据（严格按照模型期望的特征名）========
         input_dict = {
             'FTSST': 1 if ftsst == "大于等于12秒" else 0,
             'bmi': float(bmi),
@@ -123,23 +124,34 @@ if submitted:
             'bl_crp': float(crp),
             'bl_hgb': float(hgb),
             'PA': 0 if pa == "高水平" else (1 if pa == "中水平" else 2),  # 0=高,1=中,2=低
-            # One-Hot 编码
+            
+            # One-Hot 编码 - 确保包含所有期望的特征
             'Complications_0': 1 if complications == "没有" else 0,
             'Complications_1': 1 if complications == "1个" else 0,
             'Complications_2': 1 if complications == "至少2个" else 0,
+            
             'fall_0': 1 if fall == "否" else 0,
             'fall_1': 1 if fall == "是" else 0,
+            'fall_2': 0,  # 添加缺失的 fall_2 特征，设置为 0
+            
             'ADL_0': 1 if adl == "无限制" else 0,
             'ADL_1': 1 if adl == "有限制" else 0,
+            
             'gender_0': 1 if gender == "男" else 0,
             'gender_1': 1 if gender == "女" else 0,
+            
             'smoke_0': 1 if smoke == "否" else 0,
             'smoke_1': 1 if smoke == "是" else 0,
-            'smoke_2': 0,  # 假设 smoke 是二分类，smoke_2 恒为 0
+            'smoke_2': 0,  # smoke_2 恒为 0
         }
 
         # 转为 DataFrame
         input_df = pd.DataFrame([input_dict])
+
+        # 确保包含所有期望的特征，缺失的特征填充为 0
+        for feature in feature_names:
+            if feature not in input_df.columns:
+                input_df[feature] = 0
 
         # 确保列顺序与模型训练时一致
         try:
@@ -202,6 +214,7 @@ if submitted:
                     'Complications_2': f'并发症=≥2' if complications=="至少2个" else '',
                     'fall_0': f'跌倒=否' if fall=="否" else '',
                     'fall_1': f'跌倒=是' if fall=="是" else '',
+                    'fall_2': '',  # 不显示
                     'ADL_0': f'ADL=正常' if adl=="无限制" else '',
                     'ADL_1': f'ADL=受限' if adl=="有限制" else '',
                     'gender_0': f'性别=男' if gender=="男" else '',
@@ -243,5 +256,3 @@ if submitted:
 # =======================
 st.markdown("---")
 st.caption("© 2025 KOA 衰弱风险预测系统 | 仅供科研与临床参考")
-
-

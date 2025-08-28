@@ -5,10 +5,71 @@ import numpy as np
 import xgboost as xgb
 import matplotlib.pyplot as plt
 from pathlib import Path
+import os
 
 # 页面设置
 st.set_page_config(page_title="模型诊断与修复", layout="centered")
 st.title("🔧 KOA模型诊断与修复工具")
+
+# 加载模型 - 修复版本
+@st.cache_resource
+def load_model():
+    try:
+        # 获取当前文件所在目录
+        base_path = Path(__file__).parent
+        
+        # 列出目录中的所有文件，用于调试
+        st.sidebar.write("当前目录文件:", list(base_path.glob('*')))
+        
+        model_path = base_path / "frailty_xgb_model2.pkl"
+        feature_path = base_path / "frailty_feature_names.pkl"
+        
+        # 检查文件是否存在
+        if not model_path.exists():
+            st.error(f"模型文件不存在: {model_path}")
+            return None, None
+        if not feature_path.exists():
+            st.error(f"特征文件不存在: {feature_path}")
+            return None, None
+            
+        # 加载模型
+        with open(model_path, 'rb') as f:
+            model = pickle.load(f)
+        
+        # 加载特征名称
+        with open(feature_path, 'rb') as f:
+            feature_names = pickle.load(f)
+            
+        st.sidebar.success("✅ 模型加载成功")
+        return model, feature_names
+        
+    except Exception as e:
+        st.error(f"加载模型时出错: {str(e)}")
+        return None, None
+
+model, feature_names = load_model()
+
+# 如果模型加载失败，提供替代方案
+if model is None:
+    st.error("⚠️ 无法加载原始模型")
+    st.info("正在使用备用方案...")
+    
+    # 创建一个简单的替代模型用于演示
+    class FallbackModel:
+        def predict_proba(self, X):
+            # 返回一些示例概率
+            return np.array([[0.2, 0.8]])  # 假设概率
+    
+    model = FallbackModel()
+    feature_names = ['gender', 'age', 'smoking', 'bmi', 'fall', 'PA_high', 
+                    'PA_medium', 'PA_low', 'Complications_0', 'Complications_1', 
+                    'Complications_2', 'ADL', 'FTSST', 'bl_crp', 'bl_hgb']
+    
+    st.warning("使用演示模式，功能受限")
+
+# 显示当前问题
+st.error("🚨 当前模型问题：所有预测概率都异常偏高（84%-97%）")
+st.warning("这可能是因为：1）训练数据标签不平衡 2）特征编码方向错误 3）模型需要校准")
 
 # 加载模型
 @st.cache_resource
@@ -220,6 +281,7 @@ for case in correct_test_cases:
             st.warning("中风险")
         else:
             st.error("高风险")
+
 
 
 

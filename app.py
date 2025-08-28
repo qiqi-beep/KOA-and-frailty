@@ -1,13 +1,11 @@
 import streamlit as st
-import pickle
 import pandas as pd
 import numpy as np
-import xgboost as xgb
-import shap
 import matplotlib.pyplot as plt
 import time
 from pathlib import Path
 import joblib
+import sys
 
 # 页面设置
 st.set_page_config(page_title="KOA 患者衰弱风险预测", layout="centered")
@@ -28,101 +26,133 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 加载所有组件
+# 加载模型（跳过预处理器）
 @st.cache_resource
-def load_components():
+def load_model():
     try:
         base_path = Path(__file__).parent
-        components = {}
+        model_path = base_path / "frailty_xgb_model28.pkl"
         
-        # 加载预处理器
-        try:
-            preprocessor_path = base_path / "frailty_preprocessor28.pkl"
-            if preprocessor_path.exists():
-                with open(preprocessor_path, 'rb') as f:
-                    components['preprocessor'] = pickle.load(f)
-                st.success("✅ 预处理器加载成功")
-            else:
-                st.error("❌ 预处理器文件不存在")
-                return None
-        except Exception as e:
-            st.error(f"❌ 预处理器加载失败: {str(e)}")
+        if model_path.exists():
+            model = joblib.load(model_path)
+            st.success("✅ 模型加载成功")
+            return model
+        else:
+            st.error("❌ 模型文件不存在")
+            st.write("当前目录文件:", [f.name for f in base_path.glob('*')])
             return None
-        
-        # 加载模型
-        try:
-            model_path = base_path / "frailty_xgb_model28.pkl"
-            if model_path.exists():
-                components['model'] = joblib.load(model_path)
-                st.success("✅ 模型加载成功")
-            else:
-                st.error("❌ 模型文件不存在")
-                return None
-        except Exception as e:
-            st.error(f"❌ 模型加载失败: {str(e)}")
-            return None
-        
-        # 加载预测器
-        try:
-            predictor_path = base_path / "frailty_predictor28.pkl"
-            if predictor_path.exists():
-                with open(predictor_path, 'rb') as f:
-                    components['predictor'] = pickle.load(f)
-                st.success("✅ 预测器加载成功")
-            else:
-                st.warning("⚠️ 预测器文件不存在，使用默认阈值")
-        except Exception as e:
-            st.warning(f"⚠️ 预测器加载失败: {str(e)}")
-        
-        return components
-        
+            
     except Exception as e:
-        st.error(f"❌ 组件加载失败: {str(e)}")
+        st.error(f"❌ 模型加载失败: {str(e)}")
         return None
 
-components = load_components()
+model = load_model()
 
-if components is None:
-    st.error("无法加载必要的组件，请检查文件是否存在")
+if model is None:
+    st.error("无法加载模型，请检查文件是否存在")
     st.stop()
 
-preprocessor = components['preprocessor']
-model = components['model']
-predictor = components.get('predictor')
-
-# 初始化SHAP解释器
-@st.cache_resource
-def create_explainer(_model):
-    try:
-        # 创建SHAP解释器
-        explainer = shap.TreeExplainer(_model)
-        return explainer
-    except Exception as e:
-        st.warning(f"SHAP解释器创建失败: {str(e)}")
-        return None
-
-explainer = create_explainer(model)
+# 手动预处理函数 - 按照您提供的特征顺序
+def manual_preprocess(input_df):
+    """
+    手动预处理函数，按照模型训练时的特征顺序
+    特征顺序: 'FTSST', 'bmi', 'age', 'bl_crp', 'bl_hgb', 'PA_0', 'PA_1', 'PA_2', 
+             'Complications_0', 'Complications_1', 'Complications_2', 'fall_0', 'fall_1', 
+             'ADL_0', 'ADL_1', 'gender_0', 'gender_1', 'smoke_0', 'smoke_1'
+    """
+    processed_data = []
+    
+    # 1. FTSST (坐立测试时间)
+    ftsst_val = 1 if input_df['sit_stand'].iloc[0] == "大于等于12s" else 0
+    processed_data.append(ftsst_val)
+    
+    # 2. bmi (直接使用)
+    processed_data.append(input_df['bmi'].iloc[0])
+    
+    # 3. age (直接使用)
+    processed_data.append(input_df['age'].iloc[0])
+    
+    # 4. bl_crp (CRP值)
+    processed_data.append(input_df['crp'].iloc[0])
+    
+    # 5. bl_hgb (血红蛋白值)
+    processed_data.append(input_df['hgb'].iloc[0])
+    
+    # 6-8. PA_0, PA_1, PA_2 (体力活动水平)
+    activity = input_df['activity'].iloc[0]
+    pa_0 = 1 if activity == "高" else 0
+    pa_1 = 1 if activity == "中" else 0
+    pa_2 = 1 if activity == "低" else 0
+    processed_data.extend([pa_0, pa_1, pa_2])
+    
+    # 9-11. Complications_0, Complications_1, Complications_2 (并发症)
+    complication = input_df['complication'].iloc[0]
+    comp_0 = 1 if complication == "没有" else 0
+    comp_1 = 1 if complication == "1个" else 0
+    comp_2 = 1 if complication == "至少2个" else 0
+    processed_data.extend([comp_0, comp_1, comp_2])
+    
+    # 12-13. fall_0, fall_1 (跌倒史)
+    fall = input_df['fall'].iloc[0]
+    fall_0 = 1 if fall == "否" else 0
+    fall_1 = 1 if fall == "是" else 0
+    processed_data.extend([fall_0, fall_1])
+    
+    # 14-15. ADL_0, ADL_1 (日常活动能力)
+    daily_activity = input_df['daily_activity'].iloc[0]
+    adl_0 = 1 if daily_activity == "无限制" else 0
+    adl_1 = 1 if daily_activity == "有限制" else 0
+    processed_data.extend([adl_0, adl_1])
+    
+    # 16-17. gender_0, gender_1 (性别)
+    gender = input_df['gender'].iloc[0]
+    gender_0 = 1 if gender == "男" else 0
+    gender_1 = 1 if gender == "女" else 0
+    processed_data.extend([gender_0, gender_1])
+    
+    # 18-19. smoke_0, smoke_1 (吸烟)
+    smoking = input_df['smoking'].iloc[0]
+    smoke_0 = 1 if smoking == "否" else 0
+    smoke_1 = 1 if smoking == "是" else 0
+    processed_data.extend([smoke_0, smoke_1])
+    
+    return np.array([processed_data])
 
 # 获取特征名称
-def get_feature_names(preprocessor):
-    try:
-        if hasattr(preprocessor, 'get_feature_names_out'):
-            return preprocessor.get_feature_names_out()
-        else:
-            # 根据您的特征结构生成名称
-            return [
-                'FTSST', 'bmi', 'age', 'bl_crp', 'bl_hgb',
-                'PA_0', 'PA_1', 'PA_2',
-                'Complications_0', 'Complications_1', 'Complications_2',
-                'fall_0', 'fall_1',
-                'ADL_0', 'ADL_1',
-                'gender_0', 'gender_1',
-                'smoke_0', 'smoke_1'
-            ]
-    except:
-        return [f'feature_{i}' for i in range(19)]  # 假设有19个特征
+def get_feature_names():
+    return [
+        'FTSST', 'bmi', 'age', 'bl_crp', 'bl_hgb',
+        'PA_0', 'PA_1', 'PA_2',
+        'Complications_0', 'Complications_1', 'Complications_2',
+        'fall_0', 'fall_1',
+        'ADL_0', 'ADL_1',
+        'gender_0', 'gender_1',
+        'smoke_0', 'smoke_1'
+    ]
 
-feature_names = get_feature_names(preprocessor)
+# 简单的特征重要性计算（替代SHAP）
+def calculate_feature_importance(model, processed_data, feature_names):
+    """计算简单的特征重要性"""
+    try:
+        # 如果是XGBoost模型，使用内置的特征重要性
+        if hasattr(model, 'feature_importances_'):
+            return model.feature_importances_
+        else:
+            # 使用随机扰动法计算重要性
+            base_pred = model.predict_proba(processed_data)[0, 1] if hasattr(model, 'predict_proba') else model.predict(processed_data)[0]
+            importances = []
+            
+            for i in range(len(feature_names)):
+                perturbed_data = processed_data.copy()
+                perturbed_data[0, i] = 0  # 将该特征设为0
+                perturbed_pred = model.predict_proba(perturbed_data)[0, 1] if hasattr(model, 'predict_proba') else model.predict(perturbed_data)[0]
+                importance = abs(base_pred - perturbed_pred)
+                importances.append(importance)
+            
+            return np.array(importances)
+    except:
+        # 如果都失败，返回均匀分布的重要性
+        return np.ones(len(feature_names)) / len(feature_names)
 
 # 创建输入表单
 with st.form("patient_input_form"):
@@ -172,21 +202,18 @@ if submitted:
         input_df = pd.DataFrame([input_data])
         
         try:
-            # 使用预处理器转换数据
-            processed_data = preprocessor.transform(input_df)
+            # 手动预处理数据
+            processed_data = manual_preprocess(input_df)
+            feature_names = get_feature_names()
             
             # 进行预测
-            if predictor is not None and hasattr(predictor, 'predict_proba'):
-                proba = predictor.predict_proba(input_df)[0, 1]
-                prediction = predictor.predict(input_df)[0]
+            if hasattr(model, 'predict_proba'):
+                proba = model.predict_proba(processed_data)[0, 1]
+                prediction = 1 if proba >= 0.57 else 0
             else:
-                if hasattr(model, 'predict_proba'):
-                    proba = model.predict_proba(processed_data)[0, 1]
-                    prediction = 1 if proba >= 0.57 else 0
-                else:
-                    raw_pred = model.predict(processed_data)[0]
-                    proba = 1 / (1 + np.exp(-raw_pred))
-                    prediction = 1 if proba >= 0.57 else 0
+                raw_pred = model.predict(processed_data)[0]
+                proba = 1 / (1 + np.exp(-raw_pred))
+                prediction = 1 if proba >= 0.57 else 0
             
             # 显示预测结果
             st.success(f"📊 预测结果: 患者衰弱概率为 {proba*100:.2f}%")
@@ -203,91 +230,78 @@ if submitted:
                 st.write("- 保持健康生活方式")
                 st.write("- 预防性健康指导")
             
-            # SHAP可视化
-            if explainer is not None:
-                try:
-                    # 获取SHAP值
-                    shap_values = explainer.shap_values(processed_data)
-                    
-                    # 创建SHAP水平图（force plot）
-                    st.subheader("🧠 SHAP决策依据分析")
-                    
-                    # 设置matplotlib后端为Agg以避免GUI问题
-                    plt.switch_backend('Agg')
-                    
-                    # 创建水平方向的force plot
-                    plt.figure(figsize=(12, 4))
-                    shap.force_plot(
-                        explainer.expected_value,
-                        shap_values[0],
-                        processed_data[0],
-                        feature_names=feature_names,
-                        matplotlib=True,
-                        show=False,
-                        plot_cmap="RdBu"
-                    )
-                    plt.tight_layout()
-                    st.pyplot(plt.gcf(), clear_figure=True)
-                    plt.close()
-                    
-                    # 图例说明
-                    st.markdown("""
-                    **SHAP图例说明:**
-                    - 🔴 **红色特征**：增加衰弱风险的因素
-                    - 🟢 **绿色特征**：降低衰弱风险的因素  
-                    - 📏 **条形长度**：影响程度大小
-                    - 📍 **基准值**：平均预测水平
-                    - 🎯 **最终值**：当前患者的预测值
-                    """)
-                    
-                    # 显示特征重要性排序
-                    st.subheader("📊 特征影响程度排序")
-                    
-                    # 创建特征重要性DataFrame
-                    importance_df = pd.DataFrame({
-                        '特征': feature_names,
-                        'SHAP值': np.abs(shap_values[0]),
-                        '原始值': processed_data[0],
-                        '影响方向': ['增加风险' if val > 0 else '降低风险' for val in shap_values[0]]
-                    }).sort_values('SHAP值', ascending=False).head(10)
-                    
-                    # 显示表格
-                    st.dataframe(importance_df, use_container_width=True)
-                    
-                    # 显示条形图
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    colors = ['red' if dir == '增加风险' else 'green' for dir in importance_df['影响方向']]
-                    bars = ax.barh(importance_df['特征'], importance_df['SHAP值'], color=colors)
-                    ax.set_xlabel('影响程度（绝对值）')
-                    ax.set_title('Top 10 特征影响程度')
-                    plt.gca().invert_yaxis()
-                    st.pyplot(fig)
-                    
-                except Exception as e:
-                    st.error(f"SHAP可视化失败: {str(e)}")
-                    import traceback
-                    st.write(traceback.format_exc())
+            # 计算特征重要性
+            st.subheader("📈 特征影响分析")
+            
+            feature_importance = calculate_feature_importance(model, processed_data, feature_names)
+            
+            # 创建特征重要性DataFrame
+            importance_df = pd.DataFrame({
+                '特征': feature_names,
+                '重要性': feature_importance,
+                '原始值': processed_data[0],
+                '特征描述': [
+                    '坐立测试时间(≥12s=1)', 'BMI', '年龄', 'C反应蛋白', '血红蛋白',
+                    '活动水平-高', '活动水平-中', '活动水平-低',
+                    '无并发症', '1个并发症', '≥2个并发症',
+                    '无跌倒史', '有跌倒史',
+                    '日常活动无限制', '日常活动受限',
+                    '男性', '女性',
+                    '不吸烟', '吸烟'
+                ]
+            }).sort_values('重要性', ascending=False)
+            
+            # 显示前10个最重要特征
+            top_features = importance_df.head(10)
+            
+            # 创建水平条形图
+            fig, ax = plt.subplots(figsize=(10, 6))
+            colors = ['red' if val > 0 else 'green' for val in top_features['原始值']]
+            bars = ax.barh(top_features['特征描述'], top_features['重要性'], color=colors)
+            ax.set_xlabel('相对重要性')
+            ax.set_title('Top 10 特征影响程度')
+            plt.gca().invert_yaxis()
+            st.pyplot(fig)
+            
+            # 显示详细表格
+            with st.expander("查看详细特征信息"):
+                st.dataframe(importance_df, use_container_width=True)
+            
+            # 显示临床解读
+            st.subheader("🧪 临床解读")
+            
+            # 根据特征值给出解读
+            risk_factors = []
+            if processed_data[0, 0] == 1:  # FTSST
+                risk_factors.append("坐立测试时间较长(≥12s)")
+            if processed_data[0, 1] > 28:  # BMI
+                risk_factors.append(f"BMI较高({processed_data[0, 1]:.1f})")
+            if processed_data[0, 2] > 70:  # 年龄
+                risk_factors.append(f"高龄({int(processed_data[0, 2])}岁)")
+            if processed_data[0, 3] > 5:   # CRP
+                risk_factors.append(f"炎症指标较高({processed_data[0, 3]:.1f}mg/L)")
+            if processed_data[0, 4] < 120: # 血红蛋白
+                risk_factors.append(f"血红蛋白较低({processed_data[0, 4]:.1f}g/L)")
+            if processed_data[0, 8] == 0:  # 有并发症
+                risk_factors.append("存在并发症")
+            if processed_data[0, 12] == 0: # 有跌倒史
+                risk_factors.append("近期有跌倒史")
+            if processed_data[0, 14] == 1: # 日常活动受限
+                risk_factors.append("日常活动受限")
+            if processed_data[0, 19] == 1: # 吸烟
+                risk_factors.append("吸烟")
+            
+            if risk_factors:
+                st.write("**识别到的风险因素:**")
+                for factor in risk_factors:
+                    st.write(f"⚠️ {factor}")
             else:
-                st.warning("SHAP解释器不可用，无法显示决策依据分析")
+                st.write("✅ 未识别到明显风险因素")
                 
         except Exception as e:
             st.error(f"预测过程中出错: {str(e)}")
             import traceback
             st.write(traceback.format_exc())
-
-# 显示特征映射说明
-with st.expander("ℹ️ 特征编码说明"):
-    st.write("""
-    **特征编码规则:**
-    - **性别**: 男=gender_0, 女=gender_1
-    - **吸烟**: 否=smoke_0, 是=smoke_1  
-    - **跌倒**: 否=fall_0, 是=fall_1
-    - **活动水平**: 高=PA_0, 中=PA_1, 低=PA_2
-    - **并发症**: 没有=Complications_0, 1个=Complications_1, ≥2个=Complications_2
-    - **日常活动**: 无限制=ADL_0, 有限制=ADL_1
-    - **坐立测试**: <12s=FTSST=0, ≥12s=FTSST=1
-    - **数值特征**: age, bmi, bl_crp, bl_hgb 保持原始值
-    """)
 
 # 页脚
 st.markdown("---")

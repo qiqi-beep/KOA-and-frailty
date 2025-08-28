@@ -123,7 +123,6 @@ if submitted:
             'Complications_1': 1 if complication == "1个" else 0,
             'Complications_2': 1 if complication == "至少2个" else 0,
             'ADL': 1 if daily_activity == "有限制" else 0,
-            'Walking_speed': 1 if walk_speed == "大于等于1m/s" else 0,
             'FTSST': 1 if sit_stand == "大于等于12s" else 0,
             'bl_crp': crp,
             'bl_hgb': hgb        }
@@ -175,11 +174,9 @@ if submitted:
                 # 特征名称映射
                 feature_names_mapping = {
                     'age': f'Age={int(age)}',
-                    'bmi2015': f'BMI={bmi:.1f}',
-                    'bl_wbc': f'Wbc={wbc:.1f}',
-                    'bl_crea': f'Crea={crea:.1f}',
-                    'bl_plt': f'Plt={int(platelet)}',
-                    'bl_cysc': f'Cysc={cysc:.1f}',
+                    'bmi': f'BMI={bmi:.1f}',
+                    'bl_crp': f'Crp={crp:.1f}',
+                    'bl_hgb': f'Hgb={hgb:.1f}',
                     'Complications_0': f'Complications={"无" if complication=="没有" else "有"}',
                     'Complications_1': f'Complications={"无" if complication=="没有" else "有"}',
                     'Complications_2': f'Complications={"无" if complication=="没有" else "有"}',
@@ -229,5 +226,6 @@ if submitted:
 # 页脚
 st.markdown("---")
 st.caption("©2025 KOA预测系统 | 仅供临床参考")
+
 
 

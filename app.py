@@ -6,7 +6,7 @@ import xgboost as xgb
 import shap
 import matplotlib.pyplot as plt
 from pathlib import Path
-
+import time
 # 页面设置
 st.set_page_config(page_title="KOA 患者衰弱风险预测", layout="centered")
 st.title("🩺 膝骨关节炎患者衰弱风险预测系统")
@@ -243,4 +243,5 @@ if submitted:
 # =======================
 st.markdown("---")
 st.caption("© 2025 KOA 衰弱风险预测系统 | 仅供科研与临床参考")
+
 

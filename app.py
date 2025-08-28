@@ -33,7 +33,7 @@ st.markdown(
 def load_model_and_features():
     try:
         base_path = Path(__file__).parent
-        model_path = base_path / "frailty_xgb_model (1).pkl"
+        model_path = base_path / "frailty_predictor28.pkl"
         feature_path = base_path / "frailty_feature_names.pkl"
         
         # 验证文件
@@ -272,3 +272,4 @@ if submitted:
 # 页脚
 st.markdown("---")
 st.caption("©2025 KOA预测系统 | 仅供临床参考")
+

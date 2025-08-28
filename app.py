@@ -3,272 +3,192 @@ import pickle
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-import shap
 import matplotlib.pyplot as plt
-import time
 from pathlib import Path
-from matplotlib.colors import LinearSegmentedColormap
 
 # 页面设置
-st.set_page_config(page_title="KOA 患者衰弱风险预测", layout="centered")
-st.title("🩺 膝骨关节炎患者衰弱风险预测系统")
-st.markdown("根据输入的临床特征，预测膝关节骨关节炎（KOA）患者发生衰弱（Frailty）的概率，并可视化决策依据。")
+st.set_page_config(page_title="模型诊断工具", layout="centered")
+st.title("🔍 XGBoost 模型诊断工具")
+st.markdown("用于分析和诊断 `frailty_xgb_model2.pkl` 模型")
 
-# 自定义CSS实现全页面居中
-st.markdown(
-    """
-    <style>
-    .main > div {
-        max-width: 800px;
-        padding-left: 5rem;
-        padding-right: 5rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-# 加载模型和特征名称
+# 加载模型
 @st.cache_resource
-def load_model_and_features():
+def load_model_for_diagnosis():
     try:
-        import joblib
-        from pathlib import Path
-        
         base_path = Path(__file__).parent
         model_path = base_path / "frailty_xgb_model2.pkl"
-        feature_path = base_path / "frailty_feature_names.pkl"
         
-        # 验证文件
         if not model_path.exists():
-            raise FileNotFoundError(f"模型文件不存在于: {model_path}")
-        
+            st.error(f"模型文件不存在: {model_path}")
+            return None
+            
         # 尝试多种加载方式
         try:
-            # 方式1：优先尝试joblib加载
+            import joblib
             model = joblib.load(model_path)
-            if not hasattr(model, 'predict'):
-                raise ValueError("加载的对象不是有效模型")
-                
-        except Exception as e:
-            st.warning(f"Joblib加载失败，尝试XGBoost原生加载: {str(e)}")
+            st.success("使用 joblib 成功加载模型")
+            return model
+        except:
             try:
-                # 方式2：尝试XGBoost原生加载
                 model = xgb.Booster()
                 model.load_model(str(model_path))
+                st.success("使用 XGBoost 原生加载成功")
+                return model
             except Exception as e:
-                raise ValueError(f"所有加载方式均失败: {str(e)}")
-        
-        # 加载特征名
-        with open(feature_path, 'rb') as f:
-            feature_names = pickle.load(f)
-            
-        return model, feature_names
-        
+                st.error(f"所有加载方式均失败: {str(e)}")
+                return None
+                
     except Exception as e:
         st.error(f"加载失败: {str(e)}")
-        st.write("""
-        **故障排除步骤:**
-        1. 确认模型文件完整
-        2. 检查文件格式是否正确
-        3. 尝试重新生成模型文件
-        """)
-        st.write("当前目录内容:", [f.name for f in Path('.').glob('*')])
-        return None, None
+        return None
 
-model, feature_names = load_model_and_features()
+model = load_model_for_diagnosis()
 
-# 如果模型加载失败，停止执行
-if model is None or feature_names is None:
+if model is None:
     st.stop()
 
-# 初始化SHAP解释器
-@st.cache_resource
-def create_explainer(_model):
-    try:
-        # 尝试不同的方式创建解释器
-        if hasattr(_model, 'predict_proba'):
-            # 如果是scikit-learn接口的模型
-            return shap.TreeExplainer(_model, model_output="probability")
-        else:
-            # 如果是原生XGBoost模型
-            return shap.TreeExplainer(_model, model_output="margin")
-    except:
-        # 如果上述方法都失败，使用默认方式
-        return shap.TreeExplainer(_model)
+# 模型基本信息
+st.subheader("📊 模型基本信息")
 
-explainer = create_explainer(model)
-
-# 创建输入表单
-with st.form("patient_input_form"):
-    st.markdown("---")
-    st.subheader("📋 请填写以下信息") 
+if hasattr(model, 'get_params'):
+    # scikit-learn 接口的模型
+    st.write("**模型类型:** Scikit-learn 接口的 XGBoost")
+    params = model.get_params()
+    st.write("**模型参数:**")
+    st.json(params)
     
-    # 表单字段
-    gender = st.radio("您的性别", ["女", "男"])
-    age = st.number_input("您的年龄（岁）", min_value=0, max_value=120, value=60)
-    smoking = st.radio("您是否吸烟？", ["否", "是"])
-    bmi = st.number_input("输入您的 BMI（体重指数，kg/m²）", min_value=10.0, max_value=50.0, value=24.0, step=0.1)
-    fall = st.radio("您过去一年是否发生过跌倒？", ["否", "是"])
-    activity = st.radio("您觉得平时的体力活动水平", ["低水平", "中水平", "高水平"])
-    complication = st.radio("您是否有并发症？", ["没有", "1个", "至少2个"])
-    daily_activity = st.radio("您日常生活能力受限吗？", ["无限制", "有限制"])
-    sit_stand = st.radio("输入您连续5次坐立的时间（s）", ["小于12s", "大于等于12s"])
-    crp = st.number_input("输入您的C反应蛋白值（mg/L）", min_value=0, max_value=1000, value=200)
-    hgb = st.number_input("输入您的血红蛋白含量（g/L）", min_value=0.0, max_value=1000.0, value=70.0, step=0.1)
+    # 获取特征重要性
+    try:
+        importance = model.feature_importances_
+        st.write("**特征重要性:**", importance)
+    except:
+        st.write("无法获取特征重要性")
         
-    submitted = st.form_submit_button("开始评估")
+elif hasattr(model, 'save_config'):
+    # 原生 XGBoost 模型
+    st.write("**模型类型:** 原生 XGBoost")
+    try:
+        config = model.save_config()
+        st.write("**模型配置:**")
+        st.text(config[:1000] + "..." if len(config) > 1000 else config)
+    except:
+        st.write("无法获取模型配置")
 
-# 处理输入数据并预测
-if submitted:
-    with st.spinner('正在计算...'):
-        time.sleep(0.5)
-        
-        # 将输入转换为模型需要的格式
-        input_data = {
-            'gender': 1 if gender == "女" else 0,
-            'age': age,
-            'smoking': 1 if smoking == "是" else 0,
-            'bmi': bmi,
-            'fall': 1 if fall == "是" else 0,
-            'PA_high': 1 if activity == "高水平" else 0,
-            'PA_medium': 1 if activity == "中水平" else 0,
-            'PA_low': 1 if activity == "低水平" else 0,
-            'Complications_0': 1 if complication == "没有" else 0,
-            'Complications_1': 1 if complication == "1个" else 0,
-            'Complications_2': 1 if complication == "至少2个" else 0,
-            'ADL': 1 if daily_activity == "有限制" else 0,
-            'FTSST': 1 if sit_stand == "大于等于12s" else 0,
-            'bl_crp': crp,
-            'bl_hgb': hgb
-        }
-        
-        # 创建DataFrame
-        input_df = pd.DataFrame([input_data])
-        
-        # 确保所有特征都存在
-        for feature in feature_names:
-            if feature not in input_df.columns:
-                input_df[feature] = 0
-        
-        # 重新排序列
-        input_df = input_df[feature_names]
-        
-        try:
-            # 根据模型类型进行预测
-            if hasattr(model, 'predict_proba'):
-                # scikit-learn接口的模型
-                frail_prob = model.predict_proba(input_df)[0][1]
-            else:
-                # 原生XGBoost模型
-                dmatrix = xgb.DMatrix(input_df, feature_names=feature_names)
-                raw_pred = model.predict(dmatrix)[0]
-                frail_prob = 1 / (1 + np.exp(-raw_pred))
-            
-            # 显示预测结果
-            st.success(f"📊 预测结果: 患者衰弱概率为 {frail_prob*100:.2f}%")
-            
-            # 风险评估
-            if frail_prob > 0.8:
-                st.error("""⚠️ **高风险：建议立即临床干预**""")
-                st.write("- 每周随访监测")
-                st.write("- 必须物理治疗干预")
-                st.write("- 全面评估并发症")
-            elif frail_prob > 0.3:
-                st.warning("""⚠️ **中风险：建议定期监测**""")
-                st.write("- 每3-6个月评估一次")
-                st.write("- 建议适度运动计划")
-                st.write("- 基础营养评估")
-            else:
-                st.success("""✅ **低风险：建议常规健康管理**""")
-                st.write("- 每年体检一次")
-                st.write("- 保持健康生活方式")
-                st.write("- 预防性健康指导")
-            
-            # SHAP可视化
-            try:
-                # 获取SHAP值
-                if hasattr(model, 'predict_proba'):
-                    # scikit-learn接口
-                    shap_values = explainer.shap_values(input_df)
-                    expected_value = explainer.expected_value[1]  # 取正类的期望值
-                else:
-                    # 原生XGBoost接口
-                    shap_values = explainer.shap_values(dmatrix)
-                    expected_value = explainer.expected_value
-                
-                # 特征名称映射
-                feature_names_mapping = {
-                    'age': f'年龄={int(age)}岁',
-                    'bmi': f'BMI={bmi:.1f}',
-                    'bl_crp': f'CRP={crp}mg/L',
-                    'bl_hgb': f'血红蛋白={hgb:.1f}g/L',
-                    'Complications_0': f'并发症={"无" if complication=="没有" else "有"}',
-                    'Complications_1': f'并发症={"无" if complication=="没有" else "有"}',
-                    'Complications_2': f'并发症={"无" if complication=="没有" else "有"}',
-                    'FTSST': f'坐立测试={"慢(≥12s)" if sit_stand=="大于等于12s" else "快(<12s)"}',
-                    'fall': f'跌倒史={"有" if fall=="是" else "无"}',
-                    'ADL': f'日常活动={"受限" if daily_activity=="有限制" else "正常"}',
-                    'gender': f'性别={"女" if gender=="女" else "男"}',
-                    'PA_high': f'活动水平={"高" if activity=="高水平" else "中/低"}',
-                    'PA_medium': f'活动水平={"中" if activity=="中水平" else "高/低"}',
-                    'PA_low': f'活动水平={"低" if activity=="低水平" else "高/中"}',
-                    'smoking': f'吸烟={"是" if smoking=="是" else "否"}'
-                }
+# 创建测试数据来验证模型行为
+st.subheader("🧪 模型行为测试")
 
-                # 创建SHAP决策图
-                st.subheader(f"🧠 决策依据分析（{'衰弱' if frail_prob > 0.5 else '非衰弱'}类）")
-                plt.figure(figsize=(14, 4))
-                
-                # 根据SHAP值的类型调整可视化
-                if isinstance(shap_values, list):
-                    # 如果是多类输出的列表，取第二类（正类）
-                    shap_val = shap_values[1][0] if len(shap_values) > 1 else shap_values[0]
-                else:
-                    shap_val = shap_values[0]
-                
-                shap.force_plot(
-                    base_value=expected_value,
-                    shap_values=shap_val,
-                    features=input_df.iloc[0],
-                    feature_names=[feature_names_mapping.get(f, f) for f in input_df.columns],
-                    matplotlib=True,
-                    show=False,
-                    plot_cmap="RdBu"
-                )
-                st.pyplot(plt.gcf(), clear_figure=True)
-                plt.close()
-                
-                # 图例说明
-                st.markdown("""
-                **图例说明:**
-                - 🔴 **红色**：增加衰弱风险的特征  
-                - 🟢 **绿色**：降低衰弱风险的特征  
-                - 📏 **长度**：特征对预测结果的影响程度
-                """)
-                
-            except Exception as e:
-                st.warning(f"SHAP可视化暂时不可用: {str(e)}")
-                st.info("""
-                **替代分析:**
-                主要影响因素通常包括：
-                - 年龄和BMI
-                - 日常活动能力
-                - 并发症数量
-                - 体力活动水平
-                """)
-                
-        except Exception as e:
-            st.error(f"预测过程中出错: {str(e)}")
-            # 提供调试信息但不暴露敏感数据
-            st.info("""
-            **调试信息:**
-            - 输入特征数量: {}
-            - 模型所需特征数量: {}
-            """.format(len(input_df.columns), len(feature_names)))
+# 创建一些典型的测试案例
+test_cases = [
+    {"描述": "健康年轻患者", "年龄": 40, "BMI": 22, "CRP": 5, "血红蛋白": 130, "跌倒": 0, "活动水平": "高"},
+    {"描述": "典型老年患者", "年龄": 70, "BMI": 26, "CRP": 15, "血红蛋白": 110, "跌倒": 0, "活动水平": "中"},
+    {"描述": "高风险患者", "年龄": 80, "BMI": 30, "CRP": 50, "血红蛋白": 90, "跌倒": 1, "活动水平": "低"},
+]
 
-# 页脚
-st.markdown("---")
-st.caption("©2025 KOA预测系统 | 仅供临床参考")
+results = []
 
+for i, case in enumerate(test_cases):
+    # 构建完整的输入数据（需要与您的特征名称匹配）
+    input_data = {
+        'gender': 0,  # 男
+        'age': case["年龄"],
+        'smoking': 0,  # 不吸烟
+        'bmi': case["BMI"],
+        'fall': case["跌倒"],
+        'PA_high': 1 if case["活动水平"] == "高" else 0,
+        'PA_medium': 1 if case["活动水平"] == "中" else 0,
+        'PA_low': 1 if case["活动水平"] == "低" else 0,
+        'Complications_0': 1,  # 无并发症
+        'Complications_1': 0,
+        'Complications_2': 0,
+        'ADL': 0,  # 无日常活动限制
+        'FTSST': 0,  # 坐立测试快
+        'bl_crp': case["CRP"],
+        'bl_hgb': case["血红蛋白"]
+    }
+    
+    # 创建 DataFrame
+    input_df = pd.DataFrame([input_data])
+    
+    # 进行预测
+    try:
+        if hasattr(model, 'predict_proba'):
+            # scikit-learn 接口
+            proba = model.predict_proba(input_df)[0][1]
+            raw_pred = model.predict(input_df)[0]
+        else:
+            # 原生 XGBoost
+            dmatrix = xgb.DMatrix(input_df)
+            raw_pred = model.predict(dmatrix)[0]
+            proba = 1 / (1 + np.exp(-raw_pred))
+        
+        results.append({
+            "案例": case["描述"],
+            "原始预测值": raw_pred,
+            "概率": proba,
+            **case
+        })
+        
+    except Exception as e:
+        st.error(f"测试案例 {i+1} 预测失败: {str(e)}")
 
+# 显示结果
+if results:
+    st.write("**测试结果:**")
+    for result in results:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("案例", result["案例"])
+        with col2:
+            st.metric("原始预测值", f"{result['原始预测值']:.4f}")
+        with col3:
+            st.metric("衰弱概率", f"{result['概率']*100:.2f}%")
+        
+        # 显示详细参数
+        with st.expander(f"查看 {result['案例']} 的详细参数"):
+            st.write(f"年龄: {result['年龄']}岁")
+            st.write(f"BMI: {result['BMI']}")
+            st.write(f"CRP: {result['CRP']} mg/L")
+            st.write(f"血红蛋白: {result['血红蛋白']} g/L")
+            st.write(f"跌倒史: {'有' if result['跌倒'] else '无'}")
+            st.write(f"活动水平: {result['活动水平']}")
+
+# 模型校准检查
+st.subheader("⚖️ 模型校准检查")
+
+# 检查概率分布是否合理
+if results:
+    probabilities = [r['概率'] for r in results]
+    avg_prob = np.mean(probabilities)
+    
+    st.write(f"**平均预测概率:** {avg_prob:.4f}")
+    st.write(f"**概率范围:** {min(probabilities):.4f} - {max(probabilities):.4f}")
+    
+    if avg_prob > 0.8:
+        st.warning("⚠️ 模型可能过于悲观，平均预测概率偏高")
+    elif avg_prob < 0.2:
+        st.warning("⚠️ 模型可能过于乐观，平均预测概率偏低")
+    else:
+        st.success("✅ 平均预测概率在合理范围内")
+
+# 建议的修复步骤
+st.subheader("🔧 建议的修复步骤")
+
+st.markdown("""
+如果模型概率不符合常理，可以尝试：
+
+1. **检查数据预处理**：确保训练和预测时的特征处理一致
+2. **重新校准模型**：使用 Platt scaling 或 isotonic regression
+3. **调整模型参数**：特别是 `scale_pos_weight` 和 `max_delta_step`
+4. **检查类别平衡**：训练数据中正负样本的比例
+5. **验证特征工程**：确保所有特征都有合理的数值范围
+
+**立即检查:**
+- 训练数据的标签分布
+- 特征的标准缩放是否正确
+- 模型是否过拟合
+""")
+
+# 提供调试信息
+st.subheader("📋 调试信息")
+st.write("**模型对象类型:**", type(model))
+st.write("**模型方法:**", [method for method in dir(model) if not method.startswith('_')])

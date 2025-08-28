@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import time
 from pathlib import Path
 import joblib
+from sklearn.pipeline import Pipeline
 
 # 页面设置
 st.set_page_config(page_title="KOA 患者衰弱风险预测", layout="centered")
@@ -28,71 +29,79 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 加载模型和特征名称
+# 加载预处理器、模型和预测器
 @st.cache_resource
-def load_model_and_features():
+def load_components():
     try:
         base_path = Path(__file__).parent
-        model_path = base_path / "frailty_predictor28.pkl"
-        feature_path = base_path / "frailty_feature_names.pkl"
         
-        # 验证文件
-        if not model_path.exists():
-            raise FileNotFoundError(f"模型文件不存在于: {model_path}")
-        
-        # 尝试多种加载方式
+        # 加载预处理器
         try:
-            # 方式1：优先尝试joblib加载
-            model = joblib.load(model_path)
+            with open(base_path / "frailty_preprocessor.pkl", 'rb') as f:
+                preprocessor = pickle.load(f)
         except Exception as e:
-            st.warning(f"Joblib加载失败，尝试其他方式: {str(e)}")
-            try:
-                # 方式2：尝试pickle加载
-                with open(model_path, 'rb') as f:
-                    model = pickle.load(f)
-            except Exception as e:
-                st.warning(f"Pickle加载失败，尝试XGBoost原生加载: {str(e)}")
-                try:
-                    # 方式3：尝试XGBoost原生加载
-                    model = xgb.Booster()
-                    model.load_model(str(model_path))
-                except Exception as e:
-                    raise ValueError(f"所有加载方式均失败: {str(e)}")
+            st.error(f"预处理器加载失败: {str(e)}")
+            return None, None, None
         
-        # 加载特征名
-        with open(feature_path, 'rb') as f:
-            feature_names = pickle.load(f)
-            
-        return model, feature_names
+        # 加载模型
+        try:
+            model = joblib.load(base_path / "frailty_xgb_model28.pkl")
+        except Exception as e:
+            st.error(f"模型加载失败: {str(e)}")
+            return None, None, None
+        
+        # 加载预测器（包含优化阈值）
+        try:
+            with open(base_path / "frailty_predictor.pkl", 'rb') as f:
+                predictor = pickle.load(f)
+        except Exception as e:
+            st.warning(f"预测器加载失败，将使用默认阈值: {str(e)}")
+            predictor = None
+        
+        return preprocessor, model, predictor
         
     except Exception as e:
-        st.error(f"加载失败: {str(e)}")
-        st.write("""
-        **故障排除步骤:**
-        1. 确认模型文件完整
-        2. 检查文件格式是否正确
-        3. 尝试重新生成模型文件
-        """)
+        st.error(f"组件加载失败: {str(e)}")
         st.write("当前目录内容:", [f.name for f in Path('.').glob('*')])
-        return None, None
+        return None, None, None
 
-model, feature_names = load_model_and_features()
+preprocessor, model, predictor = load_components()
 
-if model is None:
+if preprocessor is None or model is None:
     st.stop()
 
 # 初始化SHAP解释器
 @st.cache_resource
-def create_explainer(_model):
+def create_explainer(_model, _preprocessor):
     try:
-        return shap.TreeExplainer(_model, model_output="margin")
-    except:
-        try:
-            return shap.TreeExplainer(_model, model_output="raw")
-        except:
-            return shap.TreeExplainer(_model)
+        # 创建一个示例数据来初始化解释器
+        example_data = pd.DataFrame({
+            'gender': ['男'],
+            'age': [65],
+            'smoking': ['否'],
+            'bmi': [24.5],
+            'fall': ['否'],
+            'activity': ['中'],
+            'complication': ['没有'],
+            'daily_activity': ['无限制'],
+            'sit_stand': ['小于12s'],
+            'crp': [3.2],
+            'hgb': [132.5]
+        })
+        
+        # 预处理示例数据
+        example_processed = _preprocessor.transform(example_data)
+        
+        # 创建解释器
+        if hasattr(_model, 'predict_proba'):
+            return shap.TreeExplainer(_model, example_processed, model_output="probability")
+        else:
+            return shap.TreeExplainer(_model, example_processed, model_output="margin")
+    except Exception as e:
+        st.warning(f"SHAP解释器创建失败: {str(e)}")
+        return None
 
-explainer = create_explainer(model)
+explainer = create_explainer(model, preprocessor)
 
 # 创建输入表单
 with st.form("patient_input_form"):
@@ -123,153 +132,142 @@ if submitted:
     with st.spinner('正在计算...'):
         time.sleep(0.5)
         
-        # 根据实际特征名称创建输入数据
+        # 创建原始输入数据
         input_data = {
-            'FTSST': 1 if sit_stand == "大于等于12s" else 0,
-            'bmi': bmi,
+            'gender': gender,
             'age': age,
-            'bl_crp': crp,
-            'bl_hgb': hgb,
-            'PA_0': 1 if activity == "高" else 0,
-            'PA_1': 1 if activity == "中" else 0,
-            'PA_2': 1 if activity == "低" else 0,
-            'Complications_0': 1 if complication == "没有" else 0,
-            'Complications_1': 1 if complication == "1个" else 0,
-            'Complications_2': 1 if complication == "至少2个" else 0,
-            'fall_0': 1 if fall == "否" else 0,
-            'fall_1': 1 if fall == "是" else 0,
-            'ADL_0': 1 if daily_activity == "无限制" else 0,
-            'ADL_1': 1 if daily_activity == "有限制" else 0,
-            'gender_0': 1 if gender == "男" else 0,
-            'gender_1': 1 if gender == "女" else 0,
-            'smoke_0': 1 if smoking == "否" else 0,
-            'smoke_1': 1 if smoking == "是" else 0
+            'smoking': smoking,
+            'bmi': bmi,
+            'fall': fall,
+            'activity': activity,
+            'complication': complication,
+            'daily_activity': daily_activity,
+            'sit_stand': sit_stand,
+            'crp': crp,
+            'hgb': hgb
         }
         
-        # 创建DataFrame
+        # 转换为DataFrame
         input_df = pd.DataFrame([input_data])
         
-        # 确保所有特征都存在
-        for feature in feature_names:
-            if feature not in input_df.columns:
-                input_df[feature] = 0
-        
-        # 重新排序列
-        input_df = input_df[feature_names]
-        
         try:
-            # 兼容不同版本的预测方式
-            if hasattr(model, 'predict_proba'):
-                # scikit-learn接口的模型
-                frail_prob = model.predict_proba(input_df)[0, 1]
-            elif hasattr(model, 'predict'):
-                # 尝试直接使用numpy数组
-                try:
-                    raw_pred = model.predict(input_df.values)[0]
-                    frail_prob = 1 / (1 + np.exp(-raw_pred))
-                except Exception as e:
-                    st.warning(f"直接预测失败，尝试其他方法: {str(e)}")
-                    # 如果是XGBoost booster，使用DMatrix
-                    if hasattr(model, 'feature_names'):
-                        dmatrix = xgb.DMatrix(input_df, feature_names=feature_names)
-                        raw_pred = model.predict(dmatrix)[0]
-                        frail_prob = 1 / (1 + np.exp(-raw_pred))
-                    else:
-                        raise e
+            # 使用预处理器转换数据
+            processed_data = preprocessor.transform(input_df)
+            
+            # 使用预测器或模型进行预测
+            if predictor is not None:
+                # 使用预测器（包含优化阈值）
+                prediction = predictor.predict(input_df)
+                proba = predictor.predict_proba(input_df)[0, 1]
             else:
-                st.error("无法识别模型类型")
-                st.stop()
+                # 直接使用模型
+                if hasattr(model, 'predict_proba'):
+                    proba = model.predict_proba(processed_data)[0, 1]
+                    prediction = (proba >= 0.57).astype(int)  # 使用优化阈值0.57
+                else:
+                    raw_pred = model.predict(processed_data)[0]
+                    proba = 1 / (1 + np.exp(-raw_pred))
+                    prediction = 1 if proba >= 0.57 else 0
             
             # 显示预测结果
-            st.success(f"📊 预测结果: 患者衰弱概率为 {frail_prob*100:.2f}%")
+            st.success(f"📊 预测结果: 患者衰弱概率为 {proba*100:.2f}%")
             
-            # 风险评估
-            if frail_prob > 0.8:
+            # 根据优化阈值进行风险评估
+            if prediction == 1:
                 st.error("""⚠️ **高风险：建议立即临床干预**""")
                 st.write("- 每周随访监测")
                 st.write("- 必须物理治疗干预")
                 st.write("- 全面评估并发症")
-            elif frail_prob > 0.3:
-                st.warning("""⚠️ **中风险：建议定期监测**""")
-                st.write("- 每3-6个月评估一次")
-                st.write("- 建议适度运动计划")
-                st.write("- 基础营养评估")
+                st.write(f"- 使用优化阈值 {0.57 if predictor is None else '自定义'} 进行判断")
             else:
                 st.success("""✅ **低风险：建议常规健康管理**""")
                 st.write("- 每年体检一次")
                 st.write("- 保持健康生活方式")
                 st.write("- 预防性健康指导")
+                st.write(f"- 使用优化阈值 {0.57 if predictor is None else '自定义'} 进行判断")
             
             # SHAP可视化
-            try:
-                # 获取SHAP值
-                if hasattr(explainer, 'shap_values'):
-                    shap_values = explainer.shap_values(input_df)
-                else:
-                    shap_values = explainer(input_df).values
-                
-                expected_value = explainer.expected_value
-                
-                # 特征名称映射
-                feature_names_mapping = {
-                    'age': f'年龄={int(age)}岁',
-                    'bmi': f'BMI={bmi:.1f}',
-                    'bl_crp': f'CRP={crp:.1f}mg/L',
-                    'bl_hgb': f'血红蛋白={hgb:.1f}g/L',
-                    'Complications_0': f'并发症={"无" if complication=="没有" else "有"}',
-                    'Complications_1': f'并发症={"1个" if complication=="1个" else "其他"}',
-                    'Complications_2': f'并发症={"≥2个" if complication=="至少2个" else "其他"}',
-                    'FTSST': f'坐立测试={"≥12s" if sit_stand=="大于等于12s" else "<12s"}',
-                    'fall_0': f'跌倒={"否" if fall=="否" else "是"}',
-                    'fall_1': f'跌倒={"是" if fall=="是" else "否"}',
-                    'ADL_0': f'日常活动={"无限制" if daily_activity=="无限制" else "受限"}',
-                    'ADL_1': f'日常活动={"受限" if daily_activity=="有限制" else "无限制"}',
-                    'gender_0': f'性别={"男" if gender=="男" else "女"}',
-                    'gender_1': f'性别={"女" if gender=="女" else "男"}',
-                    'PA_0': f'活动水平={"高" if activity=="高" else "中/低"}',
-                    'PA_1': f'活动水平={"中" if activity=="中" else "高/低"}',
-                    'PA_2': f'活动水平={"低" if activity=="低" else "高/中"}',
-                    'smoke_0': f'吸烟={"否" if smoking=="否" else "是"}',
-                    'smoke_1': f'吸烟={"是" if smoking=="是" else "否"}'
-                }
-
-                # 创建SHAP决策图
-                st.subheader(f"🧠 决策依据分析（{'衰弱' if frail_prob > 0.5 else '非衰弱'}类）")
-                
-                # 使用瀑布图
-                plt.figure(figsize=(12, 8))
-                shap.plots.waterfall(shap.Explanation(
-                    values=shap_values[0], 
-                    base_values=expected_value,
-                    feature_names=[feature_names_mapping.get(f, f) for f in input_df.columns],
-                    data=input_df.iloc[0].values
-                ))
-                st.pyplot(plt.gcf(), clear_figure=True)
-                plt.close()
-                
-                # 图例说明
-                st.markdown("""
-                **图例说明:**
-                - 📊 **条形图**：显示每个特征对预测的影响程度
-                - ➕ **正值**：增加衰弱风险的特征
-                - ➖ **负值**：降低衰弱风险的特征
-                - 📍 **基准值**：平均预测值
-                - 🎯 **最终值**：当前患者的预测值
-                """)
-                
-            except Exception as e:
-                st.error(f"SHAP可视化失败: {str(e)}")
+            if explainer is not None:
+                try:
+                    # 获取SHAP值
+                    shap_values = explainer.shap_values(processed_data)
+                    expected_value = explainer.expected_value
+                    
+                    # 获取特征名称（从预处理器中）
+                    try:
+                        # 尝试获取预处理后的特征名称
+                        if hasattr(preprocessor, 'get_feature_names_out'):
+                            feature_names = preprocessor.get_feature_names_out()
+                        else:
+                            # 使用默认特征名称
+                            feature_names = [f'feature_{i}' for i in range(processed_data.shape[1])]
+                    except:
+                        feature_names = [f'feature_{i}' for i in range(processed_data.shape[1])]
+                    
+                    # 特征名称映射
+                    feature_descriptions = {
+                        'age': f'年龄={int(age)}岁',
+                        'bmi': f'BMI={bmi:.1f}',
+                        'crp': f'CRP={crp:.1f}mg/L',
+                        'hgb': f'血红蛋白={hgb:.1f}g/L',
+                        'gender': f'性别={gender}',
+                        'smoking': f'吸烟={smoking}',
+                        'fall': f'跌倒={fall}',
+                        'activity': f'活动水平={activity}',
+                        'complication': f'并发症={complication}',
+                        'daily_activity': f'日常活动={daily_activity}',
+                        'sit_stand': f'坐立测试={sit_stand}'
+                    }
+                    
+                    # 创建SHAP决策图
+                    st.subheader(f"🧠 决策依据分析（{'衰弱' if prediction == 1 else '非衰弱'}类）")
+                    
+                    # 使用瀑布图
+                    plt.figure(figsize=(12, 8))
+                    shap.plots.waterfall(shap.Explanation(
+                        values=shap_values[0], 
+                        base_values=expected_value,
+                        feature_names=feature_names,
+                        data=processed_data[0]
+                    ))
+                    st.pyplot(plt.gcf(), clear_figure=True)
+                    plt.close()
+                    
+                    # 图例说明
+                    st.markdown("""
+                    **图例说明:**
+                    - 📊 **条形图**：显示每个特征对预测的影响程度
+                    - ➕ **正值**：增加衰弱风险的特征
+                    - ➖ **负值**：降低衰弱风险的特征
+                    - 📍 **基准值**：平均预测值
+                    - 🎯 **最终值**：当前患者的预测值
+                    """)
+                    
+                except Exception as e:
+                    st.warning(f"SHAP可视化失败: {str(e)}")
+            else:
+                st.info("SHAP解释器不可用，无法显示决策依据分析")
                 
         except Exception as e:
             st.error(f"预测过程中出错: {str(e)}")
             st.write("调试信息:", {
                 "输入数据形状": input_df.shape,
-                "特征数量": len(feature_names),
-                "输入数据列": list(input_df.columns),
+                "预处理后形状": processed_data.shape if 'processed_data' in locals() else "N/A",
                 "模型类型": type(model)
             })
+
+# 显示模型信息
+with st.expander("ℹ️ 模型信息"):
+    st.write(f"**模型类型:** {type(model).__name__}")
+    st.write(f"**预处理器:** {type(preprocessor).__name__}")
+    if predictor is not None:
+        st.write(f"**预测器:** {type(predictor).__name__}")
+        st.write(f"**优化阈值:** 0.57")
+    else:
+        st.write("**预测器:** 未使用")
+        st.write("**阈值:** 默认0.57")
+    st.write("**特征数量:**", processed_data.shape[1] if 'processed_data' in locals() else "未知")
 
 # 页脚
 st.markdown("---")
 st.caption("©2025 KOA预测系统 | 仅供临床参考")
-

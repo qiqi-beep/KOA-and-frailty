@@ -35,7 +35,7 @@ def load_model_and_features():
         base_path = Path(__file__).parent
 
         # 文件路径
-        model_path = base_path / "frailty_xgb_model.pkl"
+        model_path = base_path / "frailty_xgb_model (1).pkl"
         feature_path = base_path / "frailty_feature_names.pkl"
 
         # 检查文件是否存在
@@ -243,3 +243,4 @@ if submitted:
 # =======================
 st.markdown("---")
 st.caption("© 2025 KOA 衰弱风险预测系统 | 仅供科研与临床参考")
+

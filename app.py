@@ -3,6 +3,7 @@ import pickle
 import pandas as pd
 import numpy as np
 import xgboost as xgb
+import shap
 import matplotlib.pyplot as plt
 import time
 from pathlib import Path
@@ -27,115 +28,101 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 加载模型
+# 加载所有组件
 @st.cache_resource
-def load_model():
+def load_components():
     try:
         base_path = Path(__file__).parent
-        model_path = base_path / "frailty_xgb_model28.pkl"
+        components = {}
         
-        if model_path.exists():
-            model = joblib.load(model_path)
-            st.success("✅ 模型加载成功")
-            return model
-        else:
-            st.error("❌ 模型文件不存在")
+        # 加载预处理器
+        try:
+            preprocessor_path = base_path / "frailty_preprocessor28.pkl"
+            if preprocessor_path.exists():
+                with open(preprocessor_path, 'rb') as f:
+                    components['preprocessor'] = pickle.load(f)
+                st.success("✅ 预处理器加载成功")
+            else:
+                st.error("❌ 预处理器文件不存在")
+                return None
+        except Exception as e:
+            st.error(f"❌ 预处理器加载失败: {str(e)}")
             return None
-            
+        
+        # 加载模型
+        try:
+            model_path = base_path / "frailty_xgb_model28.pkl"
+            if model_path.exists():
+                components['model'] = joblib.load(model_path)
+                st.success("✅ 模型加载成功")
+            else:
+                st.error("❌ 模型文件不存在")
+                return None
+        except Exception as e:
+            st.error(f"❌ 模型加载失败: {str(e)}")
+            return None
+        
+        # 加载预测器
+        try:
+            predictor_path = base_path / "frailty_predictor28.pkl"
+            if predictor_path.exists():
+                with open(predictor_path, 'rb') as f:
+                    components['predictor'] = pickle.load(f)
+                st.success("✅ 预测器加载成功")
+            else:
+                st.warning("⚠️ 预测器文件不存在，使用默认阈值")
+        except Exception as e:
+            st.warning(f"⚠️ 预测器加载失败: {str(e)}")
+        
+        return components
+        
     except Exception as e:
-        st.error(f"❌ 模型加载失败: {str(e)}")
+        st.error(f"❌ 组件加载失败: {str(e)}")
         return None
 
-model = load_model()
+components = load_components()
 
-if model is None:
-    st.error("无法加载模型，请检查文件是否存在")
+if components is None:
+    st.error("无法加载必要的组件，请检查文件是否存在")
     st.stop()
 
-# 手动预处理函数 - 调整特征方向
-def manual_preprocess(input_df):
-    # 数值特征标准化（使用训练数据的典型范围）
-    # 注意：对于负面影响的特征（如年龄、CRP），我们保持正值
-    numeric_stats = {
-        'age': {'mean': 65, 'std': 10},
-        'bmi': {'mean': 25, 'std': 4},
-        'crp': {'mean': 5, 'std': 3},
-        'hgb': {'mean': 130, 'std': 15}
-    }
-    
-    processed_data = []
-    
-    # 处理数值特征 - 增加衰弱风险的特征
-    # 年龄越大，风险越高
-    age_val = input_df['age'].iloc[0]
-    age_norm = (age_val - numeric_stats['age']['mean']) / numeric_stats['age']['std']
-    processed_data.append(age_norm)
-    
-    # BMI越高，风险越高
-    bmi_val = input_df['bmi'].iloc[0]
-    bmi_norm = (bmi_val - numeric_stats['bmi']['mean']) / numeric_stats['bmi']['std']
-    processed_data.append(bmi_norm)
-    
-    # CRP越高，风险越高
-    crp_val = input_df['crp'].iloc[0]
-    crp_norm = (crp_val - numeric_stats['crp']['mean']) / numeric_stats['crp']['std']
-    processed_data.append(crp_norm)
-    
-    # 血红蛋白越低，风险越高（所以取负值）
-    hgb_val = input_df['hgb'].iloc[0]
-    hgb_norm = -(hgb_val - numeric_stats['hgb']['mean']) / numeric_stats['hgb']['std']
-    processed_data.append(hgb_norm)
-    
-    # 处理分类特征 - 调整方向使负面情况对应更高风险
-    
-    # gender_0, gender_1 (女性风险通常更高)
-    gender_val = 0 if input_df['gender'].iloc[0] == '男' else 1
-    processed_data.extend([1 - gender_val, gender_val])  # 女性=1，风险更高
-    
-    # smoke_0, smoke_1 (吸烟风险更高)
-    smoke_val = 0 if input_df['smoking'].iloc[0] == '否' else 1
-    processed_data.extend([1 - smoke_val, smoke_val])  # 吸烟=1，风险更高
-    
-    # fall_0, fall_1 (跌倒风险更高)
-    fall_val = 0 if input_df['fall'].iloc[0] == '否' else 1
-    processed_data.extend([1 - fall_val, fall_val])  # 跌倒=1，风险更高
-    
-    # PA_0, PA_1, PA_2 (活动水平越低风险越高)
-    activity_map = {'高': 0, '中': 1, '低': 2}
-    activity_val = activity_map[input_df['activity'].iloc[0]]
-    pa_features = [0, 0, 0]
-    pa_features[activity_val] = 1
-    processed_data.extend(pa_features)  # 低活动水平=1，风险更高
-    
-    # Complications_0, Complications_1, Complications_2 (并发症越多风险越高)
-    complication_map = {'没有': 0, '1个': 1, '至少2个': 2}
-    complication_val = complication_map[input_df['complication'].iloc[0]]
-    comp_features = [0, 0, 0]
-    comp_features[complication_val] = 1
-    processed_data.extend(comp_features)  # 更多并发症=1，风险更高
-    
-    # ADL_0, ADL_1 (日常活动受限风险更高)
-    adl_val = 0 if input_df['daily_activity'].iloc[0] == '无限制' else 1
-    processed_data.extend([1 - adl_val, adl_val])  # 受限=1，风险更高
-    
-    # FTSST (坐立时间越长风险越高)
-    ftsst_val = 0 if input_df['sit_stand'].iloc[0] == '小于12s' else 1
-    processed_data.append(ftsst_val)  # 时间越长=1，风险更高
-    
-    return np.array([processed_data])
+preprocessor = components['preprocessor']
+model = components['model']
+predictor = components.get('predictor')
+
+# 初始化SHAP解释器
+@st.cache_resource
+def create_explainer(_model):
+    try:
+        # 创建SHAP解释器
+        explainer = shap.TreeExplainer(_model)
+        return explainer
+    except Exception as e:
+        st.warning(f"SHAP解释器创建失败: {str(e)}")
+        return None
+
+explainer = create_explainer(model)
 
 # 获取特征名称
-def get_feature_names():
-    return [
-        'age', 'bmi', 'crp', 'hgb',           # 数值特征
-        'gender_0', 'gender_1',               # 性别
-        'smoke_0', 'smoke_1',                 # 吸烟
-        'fall_0', 'fall_1',                   # 跌倒
-        'PA_0', 'PA_1', 'PA_2',               # 活动水平
-        'Complications_0', 'Complications_1', 'Complications_2',  # 并发症
-        'ADL_0', 'ADL_1',                     # 日常活动
-        'FTSST'                               # 坐立测试
-    ]
+def get_feature_names(preprocessor):
+    try:
+        if hasattr(preprocessor, 'get_feature_names_out'):
+            return preprocessor.get_feature_names_out()
+        else:
+            # 根据您的特征结构生成名称
+            return [
+                'FTSST', 'bmi', 'age', 'bl_crp', 'bl_hgb',
+                'PA_0', 'PA_1', 'PA_2',
+                'Complications_0', 'Complications_1', 'Complications_2',
+                'fall_0', 'fall_1',
+                'ADL_0', 'ADL_1',
+                'gender_0', 'gender_1',
+                'smoke_0', 'smoke_1'
+            ]
+    except:
+        return [f'feature_{i}' for i in range(19)]  # 假设有19个特征
+
+feature_names = get_feature_names(preprocessor)
 
 # 创建输入表单
 with st.form("patient_input_form"):
@@ -146,9 +133,9 @@ with st.form("patient_input_form"):
     
     with col1:
         gender = st.radio("您的性别", ["男", "女"])
-        age = st.number_input("您的年龄（岁）", min_value=0, max_value=120, value=75)
+        age = st.number_input("您的年龄（岁）", min_value=0, max_value=120, value=65)
         smoking = st.radio("您是否吸烟？", ["否", "是"])
-        bmi = st.number_input("BMI（kg/m²）", min_value=10.0, max_value=50.0, value=28.0, step=0.1)
+        bmi = st.number_input("BMI（kg/m²）", min_value=10.0, max_value=50.0, value=24.5, step=0.1)
         fall = st.radio("过去一年是否跌倒？", ["否", "是"])
     
     with col2:
@@ -156,8 +143,8 @@ with st.form("patient_input_form"):
         complication = st.radio("并发症数量", ["没有", "1个", "至少2个"])
         daily_activity = st.radio("日常生活能力", ["无限制", "有限制"])
         sit_stand = st.radio("5次坐立时间", ["小于12s", "大于等于12s"])
-        crp = st.number_input("C反应蛋白（mg/L）", min_value=0.0, max_value=100.0, value=8.0, step=0.1)
-        hgb = st.number_input("血红蛋白（g/L）", min_value=0.0, max_value=200.0, value=115.0, step=0.1)
+        crp = st.number_input("C反应蛋白（mg/L）", min_value=0.0, max_value=100.0, value=3.2, step=0.1)
+        hgb = st.number_input("血红蛋白（g/L）", min_value=0.0, max_value=200.0, value=132.5, step=0.1)
         
     submitted = st.form_submit_button("开始评估")
 
@@ -185,24 +172,24 @@ if submitted:
         input_df = pd.DataFrame([input_data])
         
         try:
-            # 手动预处理数据
-            processed_data = manual_preprocess(input_df)
+            # 使用预处理器转换数据
+            processed_data = preprocessor.transform(input_df)
             
-            # 进行预测 - 反转概率方向
-            if hasattr(model, 'predict_proba'):
-                proba = model.predict_proba(processed_data)[0, 1]
-                # 反转概率：1 - 原始概率
-                frail_prob = 1 - proba
-                prediction = 1 if frail_prob >= 0.57 else 0
+            # 进行预测
+            if predictor is not None and hasattr(predictor, 'predict_proba'):
+                proba = predictor.predict_proba(input_df)[0, 1]
+                prediction = predictor.predict(input_df)[0]
             else:
-                raw_pred = model.predict(processed_data)[0]
-                proba = 1 / (1 + np.exp(-raw_pred))
-                # 反转概率：1 - 原始概率
-                frail_prob = 1 - proba
-                prediction = 1 if frail_prob >= 0.57 else 0
+                if hasattr(model, 'predict_proba'):
+                    proba = model.predict_proba(processed_data)[0, 1]
+                    prediction = 1 if proba >= 0.57 else 0
+                else:
+                    raw_pred = model.predict(processed_data)[0]
+                    proba = 1 / (1 + np.exp(-raw_pred))
+                    prediction = 1 if proba >= 0.57 else 0
             
             # 显示预测结果
-            st.success(f"📊 预测结果: 患者衰弱概率为 {frail_prob*100:.2f}%")
+            st.success(f"📊 预测结果: 患者衰弱概率为 {proba*100:.2f}%")
             
             # 风险评估
             if prediction == 1:
@@ -210,58 +197,97 @@ if submitted:
                 st.write("- 每周随访监测")
                 st.write("- 必须物理治疗干预")
                 st.write("- 全面评估并发症")
-                st.write(f"- 使用优化阈值 0.57 进行判断")
             else:
                 st.success("""✅ **低风险：建议常规健康管理**""")
                 st.write("- 每年体检一次")
                 st.write("- 保持健康生活方式")
                 st.write("- 预防性健康指导")
-                st.write(f"- 使用优化阈值 0.57 进行判断")
             
-            # 显示临床解释
-            st.subheader("🧪 临床特征分析")
-            
-            risk_factors = []
-            if age > 70:
-                risk_factors.append(f"👴 高龄 ({age}岁)")
-            if bmi > 28:
-                risk_factors.append(f"⚖️ 高BMI ({bmi:.1f})")
-            if crp > 5:
-                risk_factors.append(f"🔥 高炎症指标CRP ({crp:.1f}mg/L)")
-            if hgb < 120:
-                risk_factors.append(f"🩸 低血红蛋白 ({hgb:.1f}g/L)")
-            if smoking == "是":
-                risk_factors.append("🚬 吸烟")
-            if fall == "是":
-                risk_factors.append("⚠️ 近期跌倒史")
-            if activity == "低":
-                risk_factors.append("🏃 低体力活动")
-            if complication != "没有":
-                risk_factors.append(f"🩺 {complication}并发症")
-            if daily_activity == "有限制":
-                risk_factors.append("🧓 日常活动受限")
-            if sit_stand == "大于等于12s":
-                risk_factors.append("⏱️ 坐立测试时间较长")
-            
-            if risk_factors:
-                st.write("**识别到的风险因素:**")
-                for factor in risk_factors:
-                    st.write(f"- {factor}")
+            # SHAP可视化
+            if explainer is not None:
+                try:
+                    # 获取SHAP值
+                    shap_values = explainer.shap_values(processed_data)
+                    
+                    # 创建SHAP水平图（force plot）
+                    st.subheader("🧠 SHAP决策依据分析")
+                    
+                    # 设置matplotlib后端为Agg以避免GUI问题
+                    plt.switch_backend('Agg')
+                    
+                    # 创建水平方向的force plot
+                    plt.figure(figsize=(12, 4))
+                    shap.force_plot(
+                        explainer.expected_value,
+                        shap_values[0],
+                        processed_data[0],
+                        feature_names=feature_names,
+                        matplotlib=True,
+                        show=False,
+                        plot_cmap="RdBu"
+                    )
+                    plt.tight_layout()
+                    st.pyplot(plt.gcf(), clear_figure=True)
+                    plt.close()
+                    
+                    # 图例说明
+                    st.markdown("""
+                    **SHAP图例说明:**
+                    - 🔴 **红色特征**：增加衰弱风险的因素
+                    - 🟢 **绿色特征**：降低衰弱风险的因素  
+                    - 📏 **条形长度**：影响程度大小
+                    - 📍 **基准值**：平均预测水平
+                    - 🎯 **最终值**：当前患者的预测值
+                    """)
+                    
+                    # 显示特征重要性排序
+                    st.subheader("📊 特征影响程度排序")
+                    
+                    # 创建特征重要性DataFrame
+                    importance_df = pd.DataFrame({
+                        '特征': feature_names,
+                        'SHAP值': np.abs(shap_values[0]),
+                        '原始值': processed_data[0],
+                        '影响方向': ['增加风险' if val > 0 else '降低风险' for val in shap_values[0]]
+                    }).sort_values('SHAP值', ascending=False).head(10)
+                    
+                    # 显示表格
+                    st.dataframe(importance_df, use_container_width=True)
+                    
+                    # 显示条形图
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    colors = ['red' if dir == '增加风险' else 'green' for dir in importance_df['影响方向']]
+                    bars = ax.barh(importance_df['特征'], importance_df['SHAP值'], color=colors)
+                    ax.set_xlabel('影响程度（绝对值）')
+                    ax.set_title('Top 10 特征影响程度')
+                    plt.gca().invert_yaxis()
+                    st.pyplot(fig)
+                    
+                except Exception as e:
+                    st.error(f"SHAP可视化失败: {str(e)}")
+                    import traceback
+                    st.write(traceback.format_exc())
             else:
-                st.write("**未识别到明显风险因素** ✅")
+                st.warning("SHAP解释器不可用，无法显示决策依据分析")
                 
         except Exception as e:
             st.error(f"预测过程中出错: {str(e)}")
             import traceback
-            st.write("详细错误信息:", traceback.format_exc())
+            st.write(traceback.format_exc())
 
-# 显示系统信息
-with st.expander("ℹ️ 系统信息"):
-    st.write(f"**模型类型:** {type(model).__name__}")
-    st.write(f"**特征数量:** {len(get_feature_names())}")
-    st.write(f"**预测阈值:** 0.57")
-    st.write(f"**概率方向:** 已调整（高风险对应高概率）")
-    st.write("**使用内置预处理:** ✅ 是")
+# 显示特征映射说明
+with st.expander("ℹ️ 特征编码说明"):
+    st.write("""
+    **特征编码规则:**
+    - **性别**: 男=gender_0, 女=gender_1
+    - **吸烟**: 否=smoke_0, 是=smoke_1  
+    - **跌倒**: 否=fall_0, 是=fall_1
+    - **活动水平**: 高=PA_0, 中=PA_1, 低=PA_2
+    - **并发症**: 没有=Complications_0, 1个=Complications_1, ≥2个=Complications_2
+    - **日常活动**: 无限制=ADL_0, 有限制=ADL_1
+    - **坐立测试**: <12s=FTSST=0, ≥12s=FTSST=1
+    - **数值特征**: age, bmi, bl_crp, bl_hgb 保持原始值
+    """)
 
 # 页脚
 st.markdown("---")

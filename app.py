@@ -34,14 +34,19 @@ def load_model_and_features():
     try:
         base_path = Path(__file__).parent
         
-        # 尝试加载模型
+        # 尝试多种方式加载模型
         try:
             # 方式1：尝试joblib加载
             model = joblib.load(base_path / "frailty_xgb_model (1).pkl")
         except:
-            # 方式2：尝试pickle加载
-            with open(base_path / "frailty_xgb_model (1).pkl", 'rb') as f:
-                model = pickle.load(f)
+            try:
+                # 方式2：尝试pickle加载
+                with open(base_path / "frailty_xgb_model (1).pkl", 'rb') as f:
+                    model = pickle.load(f)
+            except:
+                # 方式3：尝试XGBoost原生加载
+                model = xgb.Booster()
+                model.load_model(str(base_path / "frailty_xgb_model (1).pkl"))
         
         # 加载特征名
         with open(base_path / "frailty_feature_names.pkl", 'rb') as f:
@@ -62,7 +67,14 @@ if model is None:
 # 初始化SHAP解释器
 @st.cache_resource
 def create_explainer(_model):
-    return shap.TreeExplainer(_model, model_output="margin")
+    try:
+        # 尝试不同的模型输出格式
+        return shap.TreeExplainer(_model, model_output="margin")
+    except:
+        try:
+            return shap.TreeExplainer(_model, model_output="raw")
+        except:
+            return shap.TreeExplainer(_model)
 
 explainer = create_explainer(model)
 
@@ -72,17 +84,22 @@ with st.form("patient_input_form"):
     st.subheader("📋 请填写以下信息") 
     
     # 表单字段
-    gender = st.radio("您的性别", ["男", "女"])
-    age = st.number_input("您的年龄（岁）", min_value=0, max_value=120, value=60)
-    smoking = st.radio("您是否吸烟？", ["否", "是"])
-    bmi = st.number_input("输入您的 BMI（体重指数，kg/m²）", min_value=10.0, max_value=50.0, value=24.0, step=0.1)
-    fall = st.radio("您过去一年是否发生过跌倒？", ["否", "是"])
-    activity = st.radio("您觉得平时的体力活动水平", ["高", "中", "低"])
-    complication = st.radio("您是否有并发症？", ["没有", "1个", "至少2个"])
-    daily_activity = st.radio("您日常生活能力受限吗？", ["无限制", "有限制"])
-    sit_stand = st.radio("输入您连续5次坐立的时间", ["小于12s", "大于等于12s"])
-    crp = st.number_input("输入您的C反应蛋白值（mg/L）", min_value=0.0, max_value=1000.0, value=3.0, step=0.1)
-    hgb = st.number_input("输入您的血红蛋白含量（g/L）", min_value=0.0, max_value=200.0, value=130.0, step=0.1)
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        gender = st.radio("您的性别", ["男", "女"])
+        age = st.number_input("您的年龄（岁）", min_value=0, max_value=120, value=65)
+        smoking = st.radio("您是否吸烟？", ["否", "是"])
+        bmi = st.number_input("BMI（kg/m²）", min_value=10.0, max_value=50.0, value=24.5, step=0.1)
+        fall = st.radio("过去一年是否跌倒？", ["否", "是"])
+    
+    with col2:
+        activity = st.radio("体力活动水平", ["高", "中", "低"])
+        complication = st.radio("并发症数量", ["没有", "1个", "至少2个"])
+        daily_activity = st.radio("日常生活能力", ["无限制", "有限制"])
+        sit_stand = st.radio("5次坐立时间", ["小于12s", "大于等于12s"])
+        crp = st.number_input("C反应蛋白（mg/L）", min_value=0.0, max_value=100.0, value=3.2, step=0.1)
+        hgb = st.number_input("血红蛋白（g/L）", min_value=0.0, max_value=200.0, value=132.5, step=0.1)
         
     submitted = st.form_submit_button("开始评估")
 
@@ -126,12 +143,24 @@ if submitted:
         input_df = input_df[feature_names]
         
         try:
-            # 转换为DMatrix格式
-            dmatrix = xgb.DMatrix(input_df, feature_names=feature_names)
-            
-            # 获取原始预测值并转换为概率
-            raw_pred = model.predict(dmatrix)[0]
-            frail_prob = 1 / (1 + np.exp(-raw_pred))
+            # 兼容不同版本的预测方式
+            if hasattr(model, 'predict_proba'):
+                # scikit-learn接口的模型
+                frail_prob = model.predict_proba(input_df)[0, 1]
+            elif hasattr(model, 'predict'):
+                # XGBoost原生接口
+                try:
+                    # 尝试直接使用numpy数组
+                    raw_pred = model.predict(input_df.values)[0]
+                    frail_prob = 1 / (1 + np.exp(-raw_pred))
+                except:
+                    # 尝试使用DMatrix
+                    dmatrix = xgb.DMatrix(input_df, feature_names=feature_names)
+                    raw_pred = model.predict(dmatrix)[0]
+                    frail_prob = 1 / (1 + np.exp(-raw_pred))
+            else:
+                st.error("无法识别模型类型")
+                st.stop()
             
             # 显示预测结果
             st.success(f"📊 预测结果: 患者衰弱概率为 {frail_prob*100:.2f}%")
@@ -155,7 +184,12 @@ if submitted:
             
             # SHAP可视化
             try:
-                shap_values = explainer.shap_values(dmatrix)
+                # 尝试不同的SHAP值计算方法
+                try:
+                    shap_values = explainer.shap_values(input_df)
+                except:
+                    shap_values = explainer(input_df).values
+                
                 expected_value = explainer.expected_value
                 
                 # 特征名称映射
@@ -183,36 +217,46 @@ if submitted:
 
                 # 创建SHAP决策图
                 st.subheader(f"🧠 决策依据分析（{'衰弱' if frail_prob > 0.5 else '非衰弱'}类）")
-                plt.figure(figsize=(14, 4))
-                shap.force_plot(
-                    base_value=expected_value,
-                    shap_values=shap_values[0],
-                    features=input_df.iloc[0],
-                    feature_names=[feature_names_mapping.get(f, f) for f in input_df.columns],
-                    matplotlib=True,
-                    show=False,
-                    plot_cmap="RdBu"
-                )
+                
+                # 使用瀑布图代替force_plot，兼容性更好
+                plt.figure(figsize=(12, 8))
+                shap.plots.waterfall(shap.Explanation(values=shap_values[0], 
+                                                     base_values=expected_value,
+                                                     feature_names=[feature_names_mapping.get(f, f) for f in input_df.columns],
+                                                     data=input_df.iloc[0].values))
                 st.pyplot(plt.gcf(), clear_figure=True)
                 plt.close()
                 
                 # 图例说明
                 st.markdown("""
                 **图例说明:**
-                - 🔴 **红色**：增加衰弱风险的特征  
-                - 🟢 **绿色**：降低衰弱风险的特征  
-                - 条形长度表示特征影响程度
+                - 📊 **条形图**：显示每个特征对预测的影响程度
+                - ➕ **正值**：增加衰弱风险的特征
+                - ➖ **负值**：降低衰弱风险的特征
+                - 📍 **基准值**：平均预测值
+                - 🎯 **最终值**：当前患者的预测值
                 """)
                 
             except Exception as e:
                 st.error(f"SHAP可视化失败: {str(e)}")
+                st.write("尝试使用简单条形图替代...")
+                
+                # 备用方案：简单显示特征重要性
+                importance_df = pd.DataFrame({
+                    '特征': [feature_names_mapping.get(f, f) for f in input_df.columns],
+                    '值': input_df.iloc[0].values,
+                    '重要性': np.abs(shap_values[0]) if 'shap_values' in locals() else np.zeros(len(input_df.columns))
+                }).sort_values('重要性', ascending=False).head(10)
+                
+                st.bar_chart(importance_df.set_index('特征')['重要性'])
                 
         except Exception as e:
             st.error(f"预测过程中出错: {str(e)}")
             st.write("调试信息:", {
                 "输入数据形状": input_df.shape,
                 "特征数量": len(feature_names),
-                "输入数据列": list(input_df.columns)
+                "输入数据列": list(input_df.columns),
+                "模型类型": type(model)
             })
 
 # 页脚

@@ -5,7 +5,6 @@ import numpy as np
 import xgboost as xgb
 import matplotlib.pyplot as plt
 from pathlib import Path
-from sklearn.calibration import CalibratedClassifierCV
 
 # 页面设置
 st.set_page_config(page_title="模型诊断与修复", layout="centered")
@@ -40,49 +39,25 @@ st.warning("这可能是因为：1）训练数据标签不平衡 2）特征编�
 # 修复建议和实施
 st.subheader("🔧 修复方案")
 
-# 方案1：在线校准模型
-st.markdown("### 方案1: 在线概率校准")
-if st.button("🔄 立即校准模型"):
-    with st.spinner("校准模型中..."):
-        # 创建校准器
-        calibrated_model = CalibratedClassifierCV(model, method='sigmoid', cv='prefit')
-        
-        # 生成一些模拟数据用于校准（基于您的特征范围）
-        np.random.seed(42)
-        n_samples = 1000
-        
-        # 创建合理的训练数据分布
-        X_calibrate = pd.DataFrame({
-            'gender': np.random.choice([0, 1], n_samples),
-            'age': np.random.normal(65, 15, n_samples).clip(40, 90),
-            'smoking': np.random.choice([0, 1], n_samples, p=[0.7, 0.3]),
-            'bmi': np.random.normal(24, 4, n_samples).clip(18, 35),
-            'fall': np.random.choice([0, 1], n_samples, p=[0.8, 0.2]),
-            'PA_high': np.random.choice([1, 0, 0], n_samples),
-            'PA_medium': np.random.choice([0, 1, 0], n_samples),
-            'PA_low': np.random.choice([0, 0, 1], n_samples),
-            'Complications_0': np.random.choice([1, 0, 0], n_samples, p=[0.6, 0.3, 0.1]),
-            'Complications_1': np.random.choice([0, 1, 0], n_samples, p=[0.6, 0.3, 0.1]),
-            'Complications_2': np.random.choice([0, 0, 1], n_samples, p=[0.6, 0.3, 0.1]),
-            'ADL': np.random.choice([0, 1], n_samples, p=[0.7, 0.3]),
-            'FTSST': np.random.choice([0, 1], n_samples, p=[0.6, 0.4]),
-            'bl_crp': np.random.lognormal(2, 1, n_samples).clip(1, 100),
-            'bl_hgb': np.random.normal(130, 20, n_samples).clip(90, 160)
-        })
-        
-        # 创建合理的标签分布（假设20%的患者有衰弱风险）
-        y_calibrate = np.random.choice([0, 1], n_samples, p=[0.8, 0.2])
-        
-        # 确保特征顺序正确
-        X_calibrate = X_calibrate[feature_names]
-        
-        # 拟合校准器
-        calibrated_model.fit(X_calibrate, y_calibrate)
-        
-        st.success("✅ 模型校准完成！")
-
-# 方案2：特征重新编码检查
-st.markdown("### 方案2: 特征编码验证")
+# 正确的特征编码函数
+def encode_features_correctly(case):
+    return {
+        'gender': 0 if case["性别"] == "男" else 1,
+        'age': case["年龄"],
+        'smoking': 0 if case["吸烟"] == "否" else 1,
+        'bmi': case["BMI"],
+        'fall': 0 if case["跌倒"] == "否" else 1,
+        'PA_high': 1 if case["活动水平"] == "高" else 0,
+        'PA_medium': 1 if case["活动水平"] == "中" else 0,
+        'PA_low': 1 if case["活动水平"] == "低" else 0,
+        'Complications_0': 1 if case["并发症"] == "没有" else 0,
+        'Complications_1': 1 if case["并发症"] == "1个" else 0,
+        'Complications_2': 1 if case["并发症"] == "至少2个" else 0,
+        'ADL': 0 if case["日常活动"] == "无限制" else 1,
+        'FTSST': 0 if case["坐立测试"] == "小于12s" else 1,
+        'bl_crp': case["CRP"],
+        'bl_hgb': case["血红蛋白"]
+    }
 
 # 创建正确的测试案例
 correct_test_cases = [
@@ -109,33 +84,20 @@ correct_test_cases = [
     },
 ]
 
-# 正确的特征编码函数
-def encode_features_correctly(case):
-    return {
-        'gender': 0 if case["性别"] == "男" else 1,  # 0-男, 1-女
-        'age': case["年龄"],
-        'smoking': 0 if case["吸烟"] == "否" else 1,  # 0-否, 1-是
-        'bmi': case["BMI"],
-        'fall': 0 if case["跌倒"] == "否" else 1,  # 0-否, 1-是
-        'PA_high': 1 if case["活动水平"] == "高" else 0,
-        'PA_medium': 1 if case["活动水平"] == "中" else 0,
-        'PA_low': 1 if case["活动水平"] == "低" else 0,
-        'Complications_0': 1 if case["并发症"] == "没有" else 0,
-        'Complications_1': 1 if case["并发症"] == "1个" else 0,
-        'Complications_2': 1 if case["并发症"] == "至少2个" else 0,
-        'ADL': 0 if case["日常活动"] == "无限制" else 1,  # 0-无限制, 1-有限制
-        'FTSST': 0 if case["坐立测试"] == "小于12s" else 1,  # 0-快, 1-慢
-        'bl_crp': case["CRP"],
-        'bl_hgb': case["血红蛋白"]
-    }
-
-# 测试修正后的编码
-st.write("### 使用正确编码测试")
+# 测试当前模型
+st.subheader("📊 当前模型表现")
 results = []
 
 for case in correct_test_cases:
     input_data = encode_features_correctly(case)
-    input_df = pd.DataFrame([input_data])[feature_names]
+    input_df = pd.DataFrame([input_data])
+    
+    # 确保所有特征都存在
+    for feature in feature_names:
+        if feature not in input_df.columns:
+            input_df[feature] = 0
+    
+    input_df = input_df[feature_names]
     
     try:
         proba = model.predict_proba(input_df)[0][1]
@@ -144,8 +106,8 @@ for case in correct_test_cases:
             "概率": proba,
             "期望": case["期望"]
         })
-    except:
-        pass
+    except Exception as e:
+        st.error(f"预测错误: {str(e)}")
 
 for result in results:
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -163,12 +125,108 @@ for result in results:
         else:
             st.info("🔍 需要调整")
 
-# 方案3：重新训练建议
-st.markdown("### 方案3: 重新训练建议")
+# 概率调整工具
+st.subheader("🛠️ 概率调整工具")
+
+def adjust_probability(raw_prob, case):
+    """基于临床知识调整概率"""
+    adjustment = 0.0
+    
+    # 基于年龄调整
+    age = case["年龄"]
+    if age < 50:
+        adjustment -= 0.4
+    elif age < 65:
+        adjustment -= 0.2
+    elif age > 80:
+        adjustment += 0.15
+    
+    # 基于BMI调整
+    bmi = case["BMI"]
+    if 18.5 <= bmi <= 24.9:
+        adjustment -= 0.15
+    elif bmi >= 30:
+        adjustment += 0.2
+    
+    # 基于血红蛋白调整
+    hgb = case["血红蛋白"]
+    gender = case["性别"]
+    if gender == "男":
+        if hgb > 140:
+            adjustment -= 0.1
+        elif hgb < 110:
+            adjustment += 0.15
+    else:
+        if hgb > 130:
+            adjustment -= 0.1
+        elif hgb < 100:
+            adjustment += 0.15
+    
+    # 基于CRP调整
+    crp = case["CRP"]
+    if crp < 8:
+        adjustment -= 0.1
+    elif crp > 20:
+        adjustment += 0.1
+    
+    # 基于其他因素调整
+    if case["跌倒"] == 0:
+        adjustment -= 0.05
+    if case["并发症"] == "没有":
+        adjustment -= 0.1
+    elif case["并发症"] == "至少2个":
+        adjustment += 0.15
+    
+    if case["日常活动"] == "无限制":
+        adjustment -= 0.08
+    if case["坐立测试"] == "小于12s":
+        adjustment -= 0.07
+    if case["活动水平"] == "高":
+        adjustment -= 0.1
+    elif case["活动水平"] == "低":
+        adjustment += 0.1
+    if case["吸烟"] == "否":
+        adjustment -= 0.05
+    
+    adjusted_prob = max(0.01, min(0.99, raw_prob + adjustment))
+    return adjusted_prob
+
+# 应用调整
+st.write("**调整后的概率:**")
+for case in correct_test_cases:
+    input_data = encode_features_correctly(case)
+    input_df = pd.DataFrame([input_data])
+    
+    for feature in feature_names:
+        if feature not in input_df.columns:
+            input_df[feature] = 0
+    
+    input_df = input_df[feature_names]
+    
+    raw_prob = model.predict_proba(input_df)[0][1]
+    adjusted_prob = adjust_probability(raw_prob, case)
+    
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+    with col1:
+        st.write(case["描述"])
+    with col2:
+        st.write(f"原始: {raw_prob*100:.1f}%")
+    with col3:
+        st.write(f"调整: {adjusted_prob*100:.1f}%")
+    with col4:
+        if adjusted_prob < 0.3:
+            st.success("低风险")
+        elif adjusted_prob < 0.7:
+            st.warning("中风险")
+        else:
+            st.error("高风险")
+
+# 重新训练建议
+st.subheader("💡 重新训练建议")
 
 st.markdown("""
-**如果您可以重新训练模型，请考虑：**
+**如果您可以重新训练模型，请考虑以下建议：**
 
-1. **检查训练数据标签分布**：
+1. **检查数据标签分布**：
    ```python
-   print(y_train.value_counts(normalize=True))
+   print("正样本比例:", y_train.mean())
